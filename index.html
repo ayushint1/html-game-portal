@@ -1,62 +1,458 @@
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang="en">
 <head>
-<title>Runner Game</title>
-
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Sky Runner — HTML Game</title>
 <style>
-body{
-  background:black;
-  color:#00ff00;
-  text-align:center;
-  font-family:Arial;
-}
-canvas{
-  background:#222;
-  border:3px solid #00ff00;
-}
+  :root{
+    --bg:#081026;
+    --panel:#0b1626;
+    --accent:#7bf1b6;
+    --muted:#8aa3b2;
+  }
+  html,body{height:100%;margin:0;background:var(--bg);font-family:Inter,ui-sans-serif,system-ui,Segoe UI,Roboto,"Helvetica Neue",Arial;}
+  .wrap{min-height:100%;display:flex;align-items:center;justify-content:center;padding:18px;box-sizing:border-box;}
+  canvas{display:block;border-radius:12px;box-shadow:0 12px 40px rgba(2,10,20,0.6);background:linear-gradient(#05122a,#071127);}
+  .ui{
+    position:fixed;left:18px;top:18px;color:var(--accent);z-index:30;
+    display:flex;gap:10px;align-items:center;font-weight:600;text-shadow:0 2px 12px rgba(0,0,0,0.6)
+  }
+  .btn{
+    background:linear-gradient(180deg,#0e2b3a,#0a2430);
+    color:#bff4d9;padding:8px 12px;border-radius:8px;border:1px solid rgba(255,255,255,0.04);
+    cursor:pointer;font-weight:700;box-shadow:0 6px 18px rgba(0,0,0,0.45);
+  }
+  .center-panel{
+    position:fixed;right:18px;top:18px;color:var(--muted);text-align:right;font-weight:600
+  }
+  .credit{position:fixed;left:18px;bottom:18px;color:rgba(200,230,220,0.12);font-size:12px}
+  /* small screen */
+  @media (max-width:640px){ .ui{left:12px;top:auto;bottom:12px;} .center-panel{right:12px;top:auto;bottom:12px} }
 </style>
 </head>
-
 <body>
+<div class="wrap">
+  <canvas id="gameCanvas" width="960" height="480" aria-label="Sky Runner Game"></canvas>
+</div>
 
-<h1>🏃 Runner Game</h1>
-<p>Press SPACE to jump</p>
+<div class="ui" id="controls">
+  <button class="btn" id="toggleSound">🔊</button>
+  <button class="btn" id="pauseBtn">▮▮ Pause</button>
+  <button class="btn" id="restartBtn">⟲ Restart</button>
+</div>
 
-<canvas id="game" width="600" height="200"></canvas>
+<div class="center-panel" id="scorePanel">
+  <div style="font-size:14px;color:var(--muted)">Score</div>
+  <div id="score" style="font-size:20px;color:var(--accent)">0</div>
+  <div style="font-size:12px;margin-top:6px;color:var(--muted)">Best: <span id="best">0</span></div>
+</div>
+
+<div class="credit">Sky Runner — made for Unit-II assignment</div>
 
 <script>
-const game = document.getElementById("game");
-const ctx = game.getContext("2d");
+/* ===========================
+   Sky Runner — Endless Runner
+   Single-file HTML + JS game
+   =========================== */
 
-let y = 150;
-let vel = 0;
-let gravity = 1;
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d', { alpha: false });
+let W = canvas.width, H = canvas.height;
 
-document.addEventListener("keydown", e => {
-   if(e.code === "Space" && y === 150){
-      vel = -15;
-   }
+function resize() {
+  const scale = Math.min(window.innerWidth - 36, 1200) / 960;
+  canvas.style.width = Math.round(960 * scale) + 'px';
+  canvas.style.height = Math.round(480 * scale) + 'px';
+}
+window.addEventListener('resize', resize);
+resize();
+
+/* ---------- audio (tiny) ---------- */
+// we keep optional audio but not required — toggle on/off
+let audioOn = false;
+document.getElementById('toggleSound').addEventListener('click',()=>{
+  audioOn = !audioOn;
+  document.getElementById('toggleSound').textContent = audioOn? '🔈' : '🔊';
 });
 
-function loop(){
-   ctx.clearRect(0,0,600,200);
+/* ---------- game state ---------- */
+let game = {
+  running: false,
+  paused: false,
+  score: 0,
+  best: parseInt(localStorage.getItem('skyRunnerBest')||'0',10),
+  speed: 3.5,
+  spawnTimer: 0,
+  spawnRate: 90, // frames
+  frame: 0,
+};
 
-   vel += gravity;
-   y += vel;
+/* ---------- inputs ---------- */
+const keys = { ArrowUp:false, ArrowDown:false, Space:false };
+window.addEventListener('keydown', e => {
+  if(e.code === 'Space' || e.code==='ArrowUp') { keys.Space=true; e.preventDefault(); }
+  if(e.code === 'ArrowDown') keys.ArrowDown = true;
+  if(e.code === 'KeyP'){ togglePause(); }
+});
+window.addEventListener('keyup', e => {
+  if(e.code === 'Space' || e.code==='ArrowUp') keys.Space=false;
+  if(e.code === 'ArrowDown') keys.ArrowDown=false;
+});
 
-   if(y > 150){
-     y = 150;
-     vel = 0;
-   }
+/* touch controls */
+let touchDown=false;
+canvas.addEventListener('touchstart', e=>{
+  e.preventDefault();
+  touchDown=true;
+  // tap zone: top half jump, bottom half duck
+  const t = e.touches[0];
+  const rect = canvas.getBoundingClientRect();
+  const y = (t.clientY - rect.top) / rect.height;
+  if(y < 0.6) keys.Space = true; else keys.ArrowDown = true;
+});
+canvas.addEventListener('touchend', e=>{
+  e.preventDefault();
+  touchDown=false;
+  keys.Space=false; keys.ArrowDown=false;
+});
 
-   ctx.fillStyle = "red";
-   ctx.fillRect(50, y, 30, 40);
+/* ---------- player ---------- */
+const player = {
+  x: 140, y: H - 110, w: 42, h: 60,
+  vy:0, onGround:true, duck:false,
+  color1:'#ffcc66', color2:'#ff7b76',
+  invincible: false, invTimer:0,
+  draw(){ /* draw player with simple style and duck */ 
+    ctx.save();
+    ctx.translate(this.x, this.y);
+    const ducking = this.duck && this.onGround;
+    const w = this.w, h = ducking ? this.h*0.55 : this.h;
+    // body
+    roundRect(ctx, -w/2, -h, w, h, 8);
+    ctx.fillStyle = gradientRect(-w/2, -h, w, h, this.color1, this.color2);
+    ctx.fill();
+    // eye
+    ctx.fillStyle = '#063';
+    ctx.beginPath(); ctx.arc(w*0.12, -h*0.55, 4,0,Math.PI*2); ctx.fill();
+    // shadow
+    ctx.globalAlpha = 0.18;
+    ctx.fillStyle = '#000';
+    ctx.beginPath();
+    ctx.ellipse(0, 6, w*0.65, 8, 0, 0, Math.PI*2);
+    ctx.fill();
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  },
+  update(){
+    // ducking
+    this.duck = keys.ArrowDown;
+    // jump
+    if((keys.Space || keys.ArrowUp) && this.onGround){
+      this.vy = -12.5;
+      this.onGround = false;
+      keys.Space = false; // one-time
+    }
+    // physics
+    this.vy += 0.6; this.y += this.vy;
+    if(this.y >= H - 110){ this.y = H - 110; this.vy = 0; this.onGround = true; }
+    // invincibility timer
+    if(this.invincible){
+      this.invTimer -= 1;
+      if(this.invTimer <= 0) this.invincible = false;
+    }
+  },
+  bounds(){ return {x: this.x - this.w/2, y: this.y - this.h, w: this.w, h: this.duck ? this.h*0.55 : this.h } }
+};
 
-   requestAnimationFrame(loop);
+/* ---------- obstacles ---------- */
+const obstacles = [];
+function spawnObstacle() {
+  const hChoices = [40,56,80,28];
+  const h = hChoices[Math.floor(Math.random()*hChoices.length)];
+  const y = H - 100;
+  const type = Math.random() < 0.12 ? 'tall' : 'box';
+  const w = type==='tall' ? 36 : 36 + Math.random()*30;
+  obstacles.push({
+    x: W + 80,
+    y: y,
+    w:w, h:h, type:type,
+    color: '#78c6ff',
+    passed: false
+  });
 }
 
-loop();
-</script>
+/* ---------- particles ---------- */
+const particles = [];
+function spawnParticles(x,y,color,count=14){
+  for(let i=0;i<count;i++){
+    particles.push({
+      x:x, y:y,
+      vx:(Math.random()-0.5)*6, vy:(Math.random()-1.5)*-4,
+      life:40 + Math.random()*20,
+      color: color
+    });
+  }
+}
+function updateParticles(){
+  for(let i=particles.length-1;i>=0;i--){
+    let p=particles[i];
+    p.vy += 0.2; p.x += p.vx; p.y += p.vy; p.life--;
+    if(p.life<=0) particles.splice(i,1);
+  }
+}
+function drawParticles(){
+  for(let p of particles){
+    ctx.globalAlpha = Math.max(0, p.life/60);
+    roundRectFill(ctx, p.x-2, p.y-2, 4,4,2, p.color);
+  }
+  ctx.globalAlpha = 1;
+}
 
+/* ---------- background layers ---------- */
+const bg = {
+  clouds: [],
+  mountains: [],
+  init(){
+    for(let i=0;i<8;i++){
+      this.clouds.push({x: Math.random()*W*2, y: 40 + Math.random()*80, s: 0.2+Math.random()*0.6});
+    }
+    for(let i=0;i<6;i++){
+      this.mountains.push({x: Math.random()*W*2, baseY: H-140 - Math.random()*60, h:60+Math.random()*80, w:200+Math.random()*200});
+    }
+  },
+  update(speed){
+    for(let c of this.clouds){ c.x -= speed*0.2*c.s; if(c.x < -200) c.x = W + Math.random()*W; }
+    for(let m of this.mountains){ m.x -= speed*0.4; if(m.x < -400) m.x = W + Math.random()*W; }
+  },
+  draw(){
+    // sky glow
+    const g = ctx.createLinearGradient(0,0,0,H);
+    g.addColorStop(0,'rgba(120,210,240,0.02)');
+    g.addColorStop(1,'rgba(10,14,20,0.2)');
+    ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
+    // clouds
+    for(let c of this.clouds){
+      ctx.save(); ctx.globalAlpha = 0.85*c.s;
+      ctx.beginPath();
+      ctx.fillStyle = '#dff3ff';
+      ctx.ellipse(c.x, c.y, 60*c.s, 22*c.s, 0, 0, Math.PI*2);
+      ctx.ellipse(c.x+36*c.s, c.y+6*c.s, 50*c.s, 20*c.s, 0, 0, Math.PI*2);
+      ctx.fill();
+      ctx.restore();
+    }
+    // mountains
+    ctx.save();
+    ctx.globalAlpha = 0.85;
+    for(let m of this.mountains){
+      ctx.fillStyle = '#0b2440';
+      ctx.beginPath(); ctx.moveTo(m.x, m.baseY); ctx.lineTo(m.x + m.w*0.5, m.baseY - m.h); ctx.lineTo(m.x + m.w, m.baseY); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#123153';
+      ctx.beginPath(); ctx.moveTo(m.x+m.w*0.25, m.baseY); ctx.lineTo(m.x+m.w*0.5, m.baseY - m.h*0.85); ctx.lineTo(m.x+m.w*0.75, m.baseY); ctx.closePath(); ctx.fill();
+    }
+    ctx.restore();
+  }
+};
+bg.init();
+
+/* ---------- utilities ---------- */
+function roundRect(ctx,x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r);
+  ctx.arcTo(x,y,x+w,y,r);
+  ctx.closePath();
+}
+function roundRectFill(ctx,x,y,w,h,r,color){
+  ctx.save();
+  ctx.fillStyle = color;
+  roundRect(ctx,x,y,w,h,r); ctx.fill();
+  ctx.restore();
+}
+function gradientRect(x,y,w,h,a,b){
+  const g = ctx.createLinearGradient(0,y,0,y+h);
+  g.addColorStop(0,a); g.addColorStop(1,b); return g;
+}
+/* ---------- collisions ---------- */
+function rectsOverlap(a,b){
+  return !(a.x + a.w < b.x || a.x > b.x + b.w || a.y + a.h < b.y || a.y > b.y + b.h);
+}
+
+/* ---------- main loop ---------- */
+function resetGame(){
+  obstacles.length = 0;
+  particles.length = 0;
+  game.score = 0; game.speed = 3.5; game.spawnRate = 90; game.spawnTimer=0; game.frame=0;
+  player.y = H - 110; player.vy = 0; player.onGround = true; player.invincible=false;
+  game.running = true; game.paused=false;
+}
+function gameOver(){
+  game.running = false;
+  spawnParticles(player.x, player.y - 20, '#ff7b76', 28);
+  document.getElementById('best').textContent = (game.best = Math.max(game.best, Math.floor(game.score))) ;
+  localStorage.setItem('skyRunnerBest', String(game.best));
+  // show overlay
+  showOverlay('Game Over', `Score: ${Math.floor(game.score)} — Best: ${game.best}`, 'Play Again', ()=>{
+    resetGame();
+    hideOverlay();
+  });
+}
+function showOverlay(title, text, btnText, onBtn){
+  const el = document.createElement('div');
+  el.id = 'overlay';
+  Object.assign(el.style,{
+    position:'fixed',left:0,top:0,width:'100%',height:'100%',display:'flex',justifyContent:'center',alignItems:'center',
+    background:'linear-gradient(180deg, rgba(2,8,14,0.6), rgba(2,8,14,0.8))',zIndex:9999
+  });
+  el.innerHTML = `<div style="background:rgba(6,18,27,0.95);padding:28px;border-radius:12px;border:1px solid rgba(255,255,255,0.03);color:#dff3ff;text-align:center;max-width:420px">
+    <h2 style="margin:0 0 12px">${title}</h2>
+    <div style="color:#9ebcc9;margin-bottom:18px">${text}</div>
+    <button id="overlayBtn" style="background:linear-gradient(180deg,#1aa07a,#0b6f55);color:white;padding:10px 18px;border-radius:10px;border:none;font-weight:800">${btnText}</button>
+  </div>`;
+  document.body.appendChild(el);
+  document.getElementById('overlayBtn').addEventListener('click', ()=>{ if(onBtn) onBtn(); document.body.removeChild(el); });
+}
+function hideOverlay(){ const o=document.getElementById('overlay'); if(o) document.body.removeChild(o); }
+
+/* title screen */
+showOverlay('Sky Runner', 'Jump over obstacles and survive as long as you can. Tap/click to jump. Hold down to duck.', 'Start', ()=>{
+  resetGame(); hideOverlay();
+});
+
+/* buttons */
+document.getElementById('pauseBtn').addEventListener('click', ()=>{ togglePause(); });
+document.getElementById('restartBtn').addEventListener('click', ()=>{ resetGame(); });
+function togglePause(){
+  game.paused = !game.paused;
+  document.getElementById('pauseBtn').textContent = game.paused ? '▶ Resume' : '▮▮ Pause';
+}
+
+/* main draw */
+function drawGround(){
+  const g = ctx.createLinearGradient(0, H-80, 0, H);
+  g.addColorStop(0,'#083045'); g.addColorStop(1,'#041728');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, H-80, W, 80);
+  // stripes
+  ctx.fillStyle = 'rgba(255,255,255,0.02)';
+  for(let i=0;i<30;i++){
+    ctx.fillRect((i*120 + (game.frame*game.speed*0.4)%120) - 40, H-54, 80, 6);
+  }
+}
+
+/* loop */
+function update(){
+  if(!game.running || game.paused) return;
+  game.frame++;
+  // score and speed up
+  game.score += 0.06 * game.speed;
+  if(game.frame % 180 === 0){
+    game.speed += 0.12;
+    game.spawnRate = Math.max(45, Math.round(game.spawnRate*0.96));
+  }
+  // spawn obstacles
+  game.spawnTimer++;
+  if(game.spawnTimer > game.spawnRate){
+    spawnObstacle(); game.spawnTimer = 0;
+  }
+  // update background
+  bg.update(game.speed);
+  // update player
+  player.update();
+  // obstacles
+  for(let i=obstacles.length-1;i>=0;i--){
+    let ob = obstacles[i];
+    ob.x -= game.speed * (1 + (ob.type === 'tall' ? 0.05 : 0));
+    if(!ob.passed && ob.x + ob.w < player.x) { ob.passed=true; game.score += 6; }
+    if(ob.x + ob.w < -60) obstacles.splice(i,1);
+    // collision
+    if(!player.invincible){
+      const pbb = player.bounds();
+      const obb = {x: ob.x - ob.w/2, y: ob.y - ob.h, w: ob.w, h: ob.h};
+      if(rectsOverlap(pbb, obb)){
+        // collision! small grace if ducking and obstacle small
+        if(player.duck && ob.h > 60) {
+          // safe
+        } else {
+          // hit
+          player.invincible = true; player.invTimer = 90;
+          spawnParticles(player.x, player.y - 20, '#ff7b76', 22);
+          game.score = Math.max(0, game.score - 12);
+          // short stun
+          if(game.score < 1) {
+            // end game
+            gameOver(); return;
+          }
+        }
+      }
+    }
+  }
+  updateParticles();
+}
+
+function draw(){
+  // clear
+  ctx.fillStyle = '#061425'; ctx.fillRect(0,0,W,H);
+  // bg
+  bg.draw();
+  // ground and mountains layered
+  drawGround();
+  // draw obstacles
+  for(let ob of obstacles){
+    ctx.save();
+    const x = ob.x - ob.w/2, y = ob.y - ob.h;
+    // shadow
+    ctx.globalAlpha = 0.12;
+    ctx.fillStyle = '#000';
+    ctx.beginPath(); ctx.ellipse(ob.x, ob.y+10, ob.w*0.8, 10, 0,0,Math.PI*2); ctx.fill();
+    ctx.globalAlpha = 1;
+    // box
+    roundRect(ctx, x, y, ob.w, ob.h, 6);
+    ctx.fillStyle = gradientRect(x, y, ob.w, ob.h, '#7fc8ff', '#4aa0ff');
+    ctx.fill();
+    // pattern
+    ctx.fillStyle = 'rgba(255,255,255,0.06)';
+    for(let i=0;i<3;i++){ ctx.fillRect(x + 6, y + 8 + i*12, ob.w-12, 6); }
+    ctx.restore();
+  }
+  // player
+  player.draw();
+  // particles
+  drawParticles();
+  // score UI overlay (canvas)
+  ctx.fillStyle = 'rgba(255,255,255,0.02)'; ctx.fillRect(12,12,210,56);
+  ctx.fillStyle = '#9edfcf'; ctx.font = '18px Inter, Arial'; ctx.fillText('Score: ' + Math.floor(game.score), 22, 36);
+  ctx.fillStyle = '#c7e9d5'; ctx.font = '12px Inter, Arial'; ctx.fillText('Best: ' + game.best, 22, 54);
+}
+
+/* loop driver */
+function loopMain(){
+  requestAnimationFrame(loopMain);
+  update();
+  draw();
+}
+loopMain();
+
+/* update DOM counters */
+setInterval(()=> {
+  document.getElementById('score').textContent = Math.floor(game.score);
+  document.getElementById('best').textContent = game.best;
+}, 100);
+
+/* bind clicks for start/resume on canvas area */
+canvas.addEventListener('click', (e)=>{
+  if(!game.running) { resetGame(); return; }
+  if(game.paused) { togglePause(); return; }
+  // jump on click
+  if(player.onGround) player.vy = -12.5;
+});
+
+/* helper: start paused for user to press start overlay - UI already shows overlay at start */
+/* small accessibility: keyboard P pauses */
+window.addEventListener('keydown', e => { if(e.key==='p' || e.key==='P') togglePause(); });
+
+</script>
 </body>
 </html>
