@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Runner Game</title>
+
+<style>
+body{
+  background:black;
+  color:#00ff00;
+  text-align:center;
+  font-family:Arial;
+}
+canvas{
+  background:#222;
+  border:3px solid #00ff00;
+}
+</style>
+</head>
+
+<body>
+
+<h1>🏃 Runner Game</h1>
+<p>Press SPACE to jump</p>
+
+<canvas id="game" width="600" height="200"></canvas>
+
+<script>
+const game = document.getElementById("game");
+const ctx = game.getContext("2d");
+
+let y = 150;
+let vel = 0;
+let gravity = 1;
+
+document.addEventListener("keydown", e => {
+   if(e.code === "Space" && y === 150){
+      vel = -15;
+   }
+});
+
+function loop(){
+   ctx.clearRect(0,0,600,200);
+
+   vel += gravity;
+   y += vel;
+
+   if(y > 150){
+     y = 150;
+     vel = 0;
+   }
+
+   ctx.fillStyle = "red";
+   ctx.fillRect(50, y, 30, 40);
+
+   requestAnimationFrame(loop);
+}
+
+loop();
+</script>
+
+</body>
+</html>
