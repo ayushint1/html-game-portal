@@ -41,5 +41,6 @@ Live Game Link:
 
 ## 👨‍🎓 Created By
 
-**Ayush Kumar**  
+AYUSH DUBEY 
+
 Unit–II Game Development Activity Submission
